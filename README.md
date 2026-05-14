@@ -55,30 +55,37 @@ The full stack runs 10 services and processes 200K+ rows. You need:
 
 ## Quick Start
 
-**One-shot bootstrap** (recommended) — validates resources, builds images, loads data, runs pipeline, opens dashboard:
+**One-shot bootstrap** (recommended) — validates resources, builds images, loads data, runs pipeline, **auto-builds the Superset BI dashboard**, opens the operational Flask dashboard:
 
 ```bash
+git clone https://github.com/CodeWithJainendra/Data-Lake.git
+cd Data-Lake
 ./scripts/bootstrap.sh
 ```
+
+That's it — first run takes ~10-15 min (Docker image builds + Maven JARs cached into images), subsequent runs ~3 min.
 
 **Manual** (if you want step-by-step control):
 
 ```bash
-./scripts/start.sh             # builds custom images, brings up 10 services
-./scripts/load_sample_data.sh  # generates synthetic data in 7 formats
-./scripts/run_pipeline.sh      # runs the 6-stage Spark ETL
-./scripts/start_dashboard.sh   # launches the operational dashboard on :5050
+./scripts/start.sh                 # builds custom images, brings up 10 services
+./scripts/load_sample_data.sh      # generates synthetic data in 7 formats
+./scripts/run_pipeline.sh          # runs the 6-stage Spark ETL
+./scripts/setup_superset.sh        # registers Trino in Superset + builds BI dashboard
+./scripts/start_dashboard.sh       # launches the Flask operational dashboard on :5050
 ```
 
 **Access the UIs:**
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| **Dashboard** | http://localhost:5050 | — |
-| MinIO Console | http://localhost:9001 | admin / admin123456 |
-| Spark Master UI | http://localhost:8080 | — |
+| **Flask Dashboard** | http://localhost:5050 | — (custom operational view) |
+| **Superset BI** | http://localhost:8088 | admin / admin |
+| ↳ Auto-built dashboard | http://localhost:8088/superset/dashboard/medical-data-lake-ops/ | — |
+| ↳ SQL Lab | http://localhost:8088/sqllab/ | — |
 | Trino UI | http://localhost:8081 | (use admin user) |
-| Superset | http://localhost:8088 | admin / admin |
+| Spark Master UI | http://localhost:8080 | — |
+| MinIO Console | http://localhost:9001 | admin / admin123456 |
 | NiFi | https://localhost:8443/nifi | admin / `ctsBtRBKHRAx69EqUghvvgEvjnaLjFEB` |
 | Jupyter | http://localhost:8888 | token: `datalake` |
 

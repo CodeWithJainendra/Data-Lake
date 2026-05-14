@@ -11,6 +11,10 @@ FROM apache/hive:4.0.0
 
 USER root
 
+# apache/hive:4.0.0 doesn't include curl — install it first.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # Pre-bake JARs into Hive's classpath so no runtime download is needed.
 # Source: Maven Central. Versions match what Spark uses (compatibility).
 RUN curl -sL -o /opt/hive/lib/postgresql-42.7.3.jar \

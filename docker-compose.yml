@@ -197,7 +197,12 @@ services:
   # 7. VISUALIZATION LAYER — Apache Superset
   # ──────────────────────────────────────────────────────────────────────
   superset:
-    image: apache/superset:latest
+    # Custom image — apache/superset + trino + sqlalchemy-trino + tzlocal
+    # pre-installed at build time (no runtime pip install). See superset/Dockerfile.
+    build:
+      context: ./superset
+      dockerfile: Dockerfile
+    image: datalake/superset:latest
     container_name: dl-superset
     ports:
       - "8088:8088"
@@ -209,9 +214,10 @@ services:
     volumes:
       - superset_data:/app/superset_home
       - ./superset/superset_config.py:/app/pythonpath/superset_config.py
+    # Trino driver is baked into the image (superset/Dockerfile) — no runtime
+    # pip install needed.
     command: >
       /bin/bash -c "
-      pip install trino sqlalchemy-trino &&
       superset db upgrade &&
       superset fab create-admin --username admin --firstname Admin --lastname User --email admin@datalake.local --password admin || true &&
       superset init &&
@@ -226,7 +232,10 @@ services:
   # 2. INGESTION LAYER — Apache NiFi (config persists via flow.xml.gz volume)
   # ──────────────────────────────────────────────────────────────────────
   nifi:
-    image: apache/nifi:latest
+    # Pinned to NiFi 1.27 (last stable 1.x). NiFi 2.x has reworked auth +
+    # different env vars; 1.x is more predictable for demos. Single-user
+    # credentials must be ≥ 12 chars for the password.
+    image: apache/nifi:1.27.0
     container_name: dl-nifi
     ports:
       - "8443:8443"
@@ -234,6 +243,12 @@ services:
       SINGLE_USER_CREDENTIALS_USERNAME: admin
       SINGLE_USER_CREDENTIALS_PASSWORD: ctsBtRBKHRAx69EqUghvvgEvjnaLjFEB
       NIFI_WEB_HTTPS_PORT: 8443
+      # Allow any host in the proxy whitelist (works for localhost,
+      # 127.0.0.1, or 0.0.0.0 from browsers)
+      NIFI_WEB_PROXY_HOST: "localhost:8443,127.0.0.1:8443,0.0.0.0:8443"
+      # Bump JVM — NiFi 1.27 default is too tight, OOMs on busy demos
+      NIFI_JVM_HEAP_INIT: "1g"
+      NIFI_JVM_HEAP_MAX:  "2g"
     volumes:
       - nifi_data:/opt/nifi/nifi-current/data
       - nifi_conf:/opt/nifi/nifi-current/conf
@@ -243,6 +258,14 @@ services:
       - nifi_provenance:/opt/nifi/nifi-current/provenance_repository
       - ./nifi/templates:/opt/nifi/nifi-current/templates
       - ./data:/opt/data
+    # NiFi takes ~90s first boot — generous healthcheck window prevents
+    # premature "unhealthy" reports during init.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -k -s -f https://localhost:8443/nifi-api/system-diagnostics > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
     networks:
       - datalake
 

@@ -9,8 +9,9 @@
 #   4. Brings up the full stack (10 services)
 #   5. Loads synthetic medical data (10K patients, 100 PDFs, 7 formats)
 #   6. Runs the 6-stage ETL pipeline with retries
-#   7. Starts the operational dashboard on :5050
-#   8. Opens the dashboard in the default browser (macOS / Linux)
+#   7. Registers Trino in Superset + auto-builds the BI dashboard
+#   8. Starts the operational Flask dashboard on :5050
+#   9. Opens the dashboard in the default browser (macOS / Linux)
 #
 # Total runtime: ~10-15 min on first run, ~3 min on subsequent runs.
 # ─────────────────────────────────────────────────────────────────────────
@@ -29,7 +30,7 @@ bold "  Medical & Billing Data Lake — Bootstrap"
 bold "════════════════════════════════════════════════════════════"
 
 # ── 1. Preflight ────────────────────────────────────────────────────
-bold "[1/8] Preflight checks"
+bold "[1/9] Preflight checks"
 
 # Docker available?
 if ! command -v docker >/dev/null 2>&1; then
@@ -92,19 +93,19 @@ done
 
 # ── 2. Build images ─────────────────────────────────────────────────
 bold ""
-bold "[2/8] Build custom images (Spark+OCR, Hive)  ⏱ ~5 min first run"
-docker compose build --quiet spark-master spark-worker hive-metastore
+bold "[2/9] Build custom images (Spark+OCR, Hive, Superset+Trino)  ⏱ ~5 min first run"
+docker compose build --quiet spark-master spark-worker hive-metastore superset
 ok "images built"
 
 # ── 3. Start stack ──────────────────────────────────────────────────
 bold ""
-bold "[3/8] Bring up the stack (10 services)"
+bold "[3/9] Bring up the stack (10 services)"
 docker compose up -d
 ok "containers started"
 
 # Wait for health
 bold ""
-bold "[4/8] Waiting for Trino to become healthy (~60s)"
+bold "[4/9] Waiting for Trino to become healthy (~60s)"
 for i in $(seq 1 30); do
     if curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:8081/v1/info | grep -q 200; then
         ok "Trino healthy after ${i}×2s"
@@ -117,17 +118,22 @@ echo ""
 
 # ── 5. Load data ────────────────────────────────────────────────────
 bold ""
-bold "[5/8] Generate + upload synthetic medical data (~3 min)"
+bold "[5/9] Generate + upload synthetic medical data (~3 min)"
 "$PROJECT_DIR/scripts/load_sample_data.sh"
 
 # ── 6. Run pipeline ─────────────────────────────────────────────────
 bold ""
-bold "[6/8] Run ETL pipeline — stages 0-5 (~5 min)"
+bold "[6/9] Run ETL pipeline — stages 0-5 (~5 min)"
 "$PROJECT_DIR/scripts/run_pipeline.sh"
 
-# ── 7. Dashboard ────────────────────────────────────────────────────
+# ── 7. Superset setup ───────────────────────────────────────────────
 bold ""
-bold "[7/8] Start operational dashboard"
+bold "[7/9] Register Trino in Superset + auto-build BI dashboard"
+"$PROJECT_DIR/scripts/setup_superset.sh"
+
+# ── 8. Flask dashboard ──────────────────────────────────────────────
+bold ""
+bold "[8/9] Start operational dashboard"
 nohup "$PROJECT_DIR/scripts/start_dashboard.sh" > /tmp/dashboard.log 2>&1 &
 DASH_PID=$!
 sleep 4
@@ -137,9 +143,9 @@ else
     warn "dashboard may still be starting (logs: /tmp/dashboard.log)"
 fi
 
-# ── 8. Open browser ─────────────────────────────────────────────────
+# ── 9. Open browser ─────────────────────────────────────────────────
 bold ""
-bold "[8/8] Open dashboard"
+bold "[9/9] Open dashboard"
 case "$(uname)" in
     Darwin)            open "http://localhost:5050" ;;
     Linux)             xdg-open "http://localhost:5050" 2>/dev/null || true ;;
@@ -150,13 +156,15 @@ bold ""
 bold "════════════════════════════════════════════════════════════"
 bold "  ✓ BOOTSTRAP COMPLETE"
 bold "════════════════════════════════════════════════════════════"
-echo "  Dashboard         → http://localhost:5050"
-echo "  MinIO Console     → http://localhost:9001  (admin / admin123456)"
-echo "  Spark Master UI   → http://localhost:8080"
+echo "  Flask Dashboard   → http://localhost:5050                                       (custom operational view)"
+echo "  Superset BI       → http://localhost:8088                                       (admin / admin)"
+echo "    └─ Dashboard    → http://localhost:8088/superset/dashboard/medical-data-lake-ops/"
+echo "    └─ SQL Lab      → http://localhost:8088/sqllab/"
 echo "  Trino Web UI      → http://localhost:8081"
-echo "  Superset          → http://localhost:8088  (admin / admin)"
+echo "  Spark Master UI   → http://localhost:8080"
+echo "  MinIO Console     → http://localhost:9001                                       (admin / admin123456)"
 echo "  NiFi              → https://localhost:8443/nifi"
-echo "  Jupyter           → http://localhost:8888  (token: datalake)"
+echo "  Jupyter           → http://localhost:8888                                       (token: datalake)"
 echo ""
 echo "  To stop:          ./scripts/stop.sh"
 echo "  Logs:             docker compose logs -f <service>"

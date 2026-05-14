@@ -1,6 +1,7 @@
 {
   "catalogs": [
-    { "catalog": "hive", "allow": "all" }
+    { "catalog": "hive",   "allow": "all" },
+    { "catalog": "system", "allow": "read-only" }
   ],
   "schemas": [
     { "user": ".*", "schema": ".*", "owner": false }
@@ -30,6 +31,13 @@
     {
       "user": ".*",
       "catalog": "hive",
+      "schema": ".*",
+      "table": ".*",
+      "privileges": ["SELECT"]
+    },
+    {
+      "user": ".*",
+      "catalog": "system",
       "schema": ".*",
       "table": ".*",
       "privileges": ["SELECT"]
