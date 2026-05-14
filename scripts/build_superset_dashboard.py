@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Build a complete Superset dashboard via the API.
-Registers curated tables as datasets, creates 6 charts, and assembles them
-into a single "Medical Data Lake — Operations" dashboard.
+Build a comprehensive Superset dashboard via the API, mirroring the Flask
+dashboard's structure (8 hero KPIs + tabbed sections: Revenue Cycle, Denials,
+Clinical Documentation, Providers, Data Health).
 
-Idempotent: re-running deletes the dashboard + its charts/datasets first.
+Uses modern echarts_* viz types (Superset 4.x+ — legacy `line`/`dist_bar`
+were removed from the default plugin registry).
+
+Idempotent: re-running deletes the dashboard + its charts first.
 """
 import json
 import sys
-import time
 import urllib.request
 import urllib.parse
 
@@ -36,21 +38,14 @@ class Client:
             self.token = json.loads(r.read())["access_token"]
             self.cookies = r.headers.get_all("Set-Cookie") or []
 
-        # CSRF
         req = urllib.request.Request(f"{BASE}/api/v1/security/csrf_token/",
                                      headers={"Authorization": f"Bearer {self.token}"})
         with urllib.request.urlopen(req) as r:
-            data = json.loads(r.read())
-            self.csrf = data["result"]
-            new_cookies = r.headers.get_all("Set-Cookie") or []
-            self.cookies = self.cookies + new_cookies
+            self.csrf = json.loads(r.read())["result"]
+            self.cookies += r.headers.get_all("Set-Cookie") or []
 
     def _cookie_header(self):
-        # Take the value before first ';' from each Set-Cookie
-        items = []
-        for raw in self.cookies:
-            items.append(raw.split(";", 1)[0])
-        return "; ".join(items)
+        return "; ".join(raw.split(";", 1)[0] for raw in self.cookies)
 
     def request(self, method, path, body=None, params=None):
         url = f"{BASE}{path}"
@@ -63,6 +58,7 @@ class Client:
         }
         if method != "GET" and self.csrf:
             headers["X-CSRFToken"] = self.csrf
+            headers["Referer"] = BASE
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
@@ -76,6 +72,30 @@ class Client:
 c = Client()
 
 
+# ── Metric / column helpers ────────────────────────────────────────────
+def sum_metric(col, label):
+    return {"aggregate": "SUM", "column": {"column_name": col},
+            "expressionType": "SIMPLE", "label": label,
+            "optionName": f"metric_sum_{col}"}
+
+
+def count_metric(col, label):
+    return {"aggregate": "COUNT", "column": {"column_name": col},
+            "expressionType": "SIMPLE", "label": label,
+            "optionName": f"metric_count_{col}"}
+
+
+def avg_metric(col, label):
+    return {"aggregate": "AVG", "column": {"column_name": col},
+            "expressionType": "SIMPLE", "label": label,
+            "optionName": f"metric_avg_{col}"}
+
+
+def sql_metric(sql, label):
+    return {"expressionType": "SQL", "sqlExpression": sql,
+            "label": label, "optionName": f"metric_sql_{label.replace(' ', '_')}"}
+
+
 # ── 1. Login + find Trino database id ─────────────────────────────────
 def find_db_id():
     rs = c.request("GET", "/api/v1/database/")
@@ -86,7 +106,7 @@ def find_db_id():
     sys.exit(1)
 
 
-# ── 2. Register tables as datasets (idempotent: skip if exists) ────────
+# ── 2. Register tables as datasets (idempotent) ────────────────────────
 TABLES = [
     "fact_claims", "fact_encounters", "dim_patient_masked",
     "dim_clinical_documents", "agg_monthly_revenue",
@@ -118,12 +138,11 @@ def ensure_datasets(db_id):
     return ds_ids
 
 
-# ── 3. Delete prior dashboard + its charts (clean slate per run) ───────
+# ── 3. Delete prior dashboard + its charts ─────────────────────────────
 def cleanup_prior():
     rs = c.request("GET", "/api/v1/dashboard/")
     matching = [d for d in rs.get("result", []) if d["dashboard_title"] == DASHBOARD_TITLE]
     for d in matching:
-        # Get charts in this dashboard
         try:
             detail = c.request("GET", f"/api/v1/dashboard/{d['id']}/charts")
             chart_ids = [item["id"] for item in detail.get("result", [])]
@@ -134,13 +153,20 @@ def cleanup_prior():
         for cid in chart_ids:
             try:
                 c.request("DELETE", f"/api/v1/chart/{cid}")
-                print(f"    ✓ deleted chart {cid}")
             except Exception:
                 pass
+        if chart_ids:
+            print(f"    ✓ deleted {len(chart_ids)} associated charts")
 
 
 # ── 4. Create charts ───────────────────────────────────────────────────
-def create_chart(name, datasource_id, viz_type, params):
+def chart(name, datasource_id, viz_type, params_extra):
+    params = {
+        "datasource": f"{datasource_id}__table",
+        "viz_type": viz_type,
+        "adhoc_filters": [],
+        **params_extra,
+    }
     body = {
         "slice_name": name,
         "datasource_id": datasource_id,
@@ -149,113 +175,167 @@ def create_chart(name, datasource_id, viz_type, params):
         "params": json.dumps(params),
     }
     r = c.request("POST", "/api/v1/chart/", body=body)
-    print(f"  ✓ chart: {name} (id={r['id']})")
+    print(f"  ✓ {viz_type:30s} {name} (id={r['id']})")
     return r["id"]
 
 
 def build_charts(ds):
     ids = {}
 
-    # 1. Total billed (Big Number)
-    ids["billed"] = create_chart(
-        "Total Billed", ds["fact_claims"], "big_number_total",
-        {
-            "datasource": f"{ds['fact_claims']}__table",
-            "viz_type": "big_number_total",
-            "metric": {"aggregate": "SUM", "column": {"column_name": "billed_amount"},
-                       "expressionType": "SIMPLE", "label": "Total Billed"},
-            "adhoc_filters": [],
-            "y_axis_format": "$,.0f",
-        })
+    # ─── HERO KPIs (8 big numbers) ────────────────────────────────────
+    ids["k_patients"] = chart(
+        "Total Patients", ds["dim_patient_masked"], "big_number_total",
+        {"metric": count_metric("patient_token", "Patients"),
+         "y_axis_format": ",d", "subheader": "unique MRNs in dim_patient"})
 
-    # 2. Total paid
-    ids["paid"] = create_chart(
-        "Total Paid", ds["fact_claims"], "big_number_total",
-        {
-            "datasource": f"{ds['fact_claims']}__table",
-            "viz_type": "big_number_total",
-            "metric": {"aggregate": "SUM", "column": {"column_name": "paid_amount"},
-                       "expressionType": "SIMPLE", "label": "Total Paid"},
-            "adhoc_filters": [],
-            "y_axis_format": "$,.0f",
-        })
+    ids["k_encounters"] = chart(
+        "Encounters", ds["fact_encounters"], "big_number_total",
+        {"metric": count_metric("encounter_id", "Encounters"),
+         "y_axis_format": ",d", "subheader": "clinical visits tracked"})
 
-    # 3. Denial rate (calculated metric via SQL expression)
-    ids["denial_rate"] = create_chart(
+    ids["k_claims"] = chart(
+        "Claims", ds["fact_claims"], "big_number_total",
+        {"metric": count_metric("claim_id", "Claims"),
+         "y_axis_format": ",d", "subheader": "submitted to payers"})
+
+    ids["k_billed"] = chart(
+        "Billed Amount", ds["fact_claims"], "big_number_total",
+        {"metric": sum_metric("billed_amount", "Billed"),
+         "y_axis_format": "$,.2s", "subheader": "gross billed"})
+
+    ids["k_paid"] = chart(
+        "Collected", ds["fact_claims"], "big_number_total",
+        {"metric": sum_metric("paid_amount", "Paid"),
+         "y_axis_format": "$,.2s", "subheader": "net payments received"})
+
+    ids["k_collection_rate"] = chart(
+        "Collection Rate %", ds["fact_claims"], "big_number_total",
+        {"metric": sql_metric(
+            "100.0 * SUM(paid_amount) / NULLIF(SUM(billed_amount), 0)",
+            "Collection Rate"),
+         "y_axis_format": ".2f", "subheader": "paid ÷ billed"})
+
+    ids["k_denial_rate"] = chart(
         "Denial Rate %", ds["fact_claims"], "big_number_total",
-        {
-            "datasource": f"{ds['fact_claims']}__table",
-            "viz_type": "big_number_total",
-            "metric": {"label": "Denial Rate",
-                       "expressionType": "SQL",
-                       "sqlExpression": "100.0 * COUNT(CASE WHEN denial_reason_code IS NOT NULL THEN 1 END) / COUNT(*)"},
-            "adhoc_filters": [],
-            "y_axis_format": ".2f",
-        })
+        {"metric": sql_metric(
+            "100.0 * COUNT(CASE WHEN denial_reason_code IS NOT NULL THEN 1 END) / COUNT(*)",
+            "Denial Rate"),
+         "y_axis_format": ".2f", "subheader": "% of claims denied"})
 
-    # 4. Top denial reasons (Bar)
-    ids["denials"] = create_chart(
-        "Top 10 Denial Reasons", ds["agg_denial_summary"], "dist_bar",
-        {
-            "datasource": f"{ds['agg_denial_summary']}__table",
-            "viz_type": "dist_bar",
-            "metrics": [{"aggregate": "SUM", "column": {"column_name": "denial_count"},
-                         "expressionType": "SIMPLE", "label": "Denials"}],
-            "groupby": ["denial_reason_code"],
-            "row_limit": 10,
-            "order_desc": True,
-            "show_legend": False,
-        })
+    ids["k_days"] = chart(
+        "Avg Days to Pay", ds["fact_claims"], "big_number_total",
+        {"metric": avg_metric("days_to_adjudicate", "Days"),
+         "y_axis_format": ".1f", "subheader": "submission → adjudication"})
 
-    # 5. Monthly revenue (Line)
-    ids["monthly"] = create_chart(
-        "Monthly Revenue Trend", ds["agg_monthly_revenue"], "line",
+    # ─── REVENUE CYCLE ────────────────────────────────────────────────
+    ids["monthly"] = chart(
+        "Monthly Revenue Trend", ds["agg_monthly_revenue"],
+        "echarts_timeseries_line",
         {
-            "datasource": f"{ds['agg_monthly_revenue']}__table",
-            "viz_type": "line",
+            "x_axis": "submitted_month",
             "metrics": [
-                {"aggregate": "SUM", "column": {"column_name": "total_billed"},
-                 "expressionType": "SIMPLE", "label": "Billed"},
-                {"aggregate": "SUM", "column": {"column_name": "total_paid"},
-                 "expressionType": "SIMPLE", "label": "Paid"},
+                sum_metric("total_billed", "Billed"),
+                sum_metric("total_paid",   "Paid"),
             ],
             "groupby": [],
-            "x_axis": "submitted_month",
             "row_limit": 1000,
-            "y_axis_format": "$,.0f",
+            "y_axis_format": "$,.2s",
+            "show_legend": True,
+            "rich_tooltip": True,
+            "seriesType": "line",
+            "markerEnabled": True,
+            "color_scheme": "supersetColors",
         })
 
-    # 6. Revenue by department (Bar)
-    ids["dept"] = create_chart(
-        "Revenue by Department", ds["agg_monthly_revenue"], "dist_bar",
+    ids["payer"] = chart(
+        "Payer Mix", ds["agg_monthly_revenue"], "pie",
         {
-            "datasource": f"{ds['agg_monthly_revenue']}__table",
-            "viz_type": "dist_bar",
-            "metrics": [{"aggregate": "SUM", "column": {"column_name": "total_billed"},
-                         "expressionType": "SIMPLE", "label": "Billed"}],
-            "groupby": ["department"],
-            "row_limit": 10,
-            "order_desc": True,
+            "groupby": ["payer_name"],
+            "metric": sum_metric("total_paid", "Paid"),
+            "row_limit": 25,
+            "donut": True,
+            "innerRadius": 50,
+            "outerRadius": 80,
+            "show_legend": True,
+            "label_type": "key",
+            "number_format": "$,.2s",
+            "color_scheme": "supersetColors",
         })
 
-    # 7. Document types (Pie)
-    ids["docs"] = create_chart(
+    ids["dept"] = chart(
+        "Revenue by Department", ds["agg_monthly_revenue"],
+        "echarts_timeseries_bar",
+        {
+            "x_axis": "department",
+            "metrics": [
+                sum_metric("total_billed", "Billed"),
+                sum_metric("total_paid",   "Paid"),
+            ],
+            "groupby": [],
+            "row_limit": 10,
+            "y_axis_format": "$,.2s",
+            "show_legend": True,
+            "color_scheme": "supersetColors",
+        })
+
+    # ─── DENIALS ──────────────────────────────────────────────────────
+    ids["denials"] = chart(
+        "Top 10 Denial Reasons", ds["agg_denial_summary"],
+        "echarts_timeseries_bar",
+        {
+            "x_axis": "denial_reason_code",
+            "metrics": [
+                sum_metric("denial_count",   "Denials"),
+                sum_metric("billed_at_risk", "Revenue at Risk"),
+            ],
+            "groupby": [],
+            "row_limit": 10,
+            "show_legend": True,
+            "color_scheme": "supersetColors",
+        })
+
+    # ─── CLINICAL DOCUMENTATION ───────────────────────────────────────
+    ids["raf"] = chart(
+        "Avg RAF Score by Department", ds["agg_provider_kpi"],
+        "echarts_timeseries_bar",
+        {
+            "x_axis": "department",
+            "metrics": [avg_metric("avg_raf_score", "Avg RAF")],
+            "groupby": [],
+            "row_limit": 15,
+            "show_legend": False,
+            "color_scheme": "supersetColors",
+        })
+
+    ids["docs"] = chart(
         "Clinical Documents by Type", ds["dim_clinical_documents"], "pie",
         {
-            "datasource": f"{ds['dim_clinical_documents']}__table",
-            "viz_type": "pie",
-            "metric": {"aggregate": "COUNT", "column": {"column_name": "document_id"},
-                       "expressionType": "SIMPLE", "label": "Docs"},
             "groupby": ["document_type"],
+            "metric": count_metric("document_id", "Docs"),
             "row_limit": 25,
+            "donut": True,
+            "innerRadius": 50,
+            "outerRadius": 80,
+            "show_legend": True,
+            "label_type": "key_value_percent",
+            "color_scheme": "supersetColors",
         })
 
-    # 8. DQ status (Table)
-    ids["dq"] = create_chart(
+    # ─── PROVIDERS ────────────────────────────────────────────────────
+    ids["providers"] = chart(
+        "Top Providers by Revenue", ds["agg_provider_kpi"], "table",
+        {
+            "all_columns": ["provider_id", "department", "encounter_count",
+                            "total_charges", "avg_raf_score", "severe_dx_encounters"],
+            "row_limit": 10,
+            "order_by_cols": ['["total_charges",false]'],
+            "table_timestamp_format": "smart_date",
+        })
+
+    # ─── DATA HEALTH ──────────────────────────────────────────────────
+    ids["dq"] = chart(
         "Data Quality Status", ds["dq_metrics"], "table",
         {
-            "datasource": f"{ds['dq_metrics']}__table",
-            "viz_type": "table",
             "all_columns": ["table_name", "zone", "row_count", "duplicate_pct",
                             "worst_null_column", "worst_null_pct", "status"],
             "row_limit": 50,
@@ -265,57 +345,99 @@ def build_charts(ds):
     return ids
 
 
-# ── 5. Build dashboard with proper ROW-based grid layout ───────────────
+# ── 5. Build dashboard with tabbed layout ──────────────────────────────
 def build_dashboard(chart_ids):
-    # Superset's 12-col grid. CHART must live inside a ROW, not directly in GRID.
-    # Each ROW's children share that row; multiple CHART widths sum ≤ 12.
-    def chart(key, cid, width, height):
+    def chart_el(key, cid, w, h, parents):
         return {
             "type": "CHART",
             "id": key,
-            "meta": {"chartId": cid, "width": width, "height": height},
+            "meta": {"chartId": cid, "width": w, "height": h},
             "children": [],
-            "parents": ["ROOT_ID", "GRID_ID"],
+            "parents": parents,
         }
 
-    def row(key, children):
+    def row(key, children, parents):
         return {
             "type": "ROW",
             "id": key,
             "meta": {"background": "BACKGROUND_TRANSPARENT"},
             "children": children,
-            "parents": ["ROOT_ID", "GRID_ID"],
+            "parents": parents,
         }
 
-    # Layout — 4 rows (KPI, monthly+denials, dept+docs, full-width DQ)
+    def tab(key, name, children, parents):
+        return {
+            "type": "TAB",
+            "id": key,
+            "meta": {"text": name},
+            "children": children,
+            "parents": parents,
+        }
+
+    PG = ["ROOT_ID", "GRID_ID"]                          # parents for KPI rows
+    TPG = ["ROOT_ID", "GRID_ID", "TABS-MAIN"]            # parents for tabs
+
     positions = {
         "DASHBOARD_VERSION_KEY": "v2",
         "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
         "GRID_ID": {
             "type": "GRID", "id": "GRID_ID",
-            "children": ["ROW-kpi", "ROW-rev", "ROW-detail", "ROW-dq"],
+            "children": ["ROW-kpi-1", "ROW-kpi-2", "TABS-MAIN"],
             "parents": ["ROOT_ID"],
         },
 
-        # Row 1: KPIs (3 big numbers, each 4/12)
-        "ROW-kpi": row("ROW-kpi", ["CHART-billed", "CHART-paid", "CHART-denial"]),
-        "CHART-billed": chart("CHART-billed", chart_ids["billed"],      4, 30),
-        "CHART-paid":   chart("CHART-paid",   chart_ids["paid"],        4, 30),
-        "CHART-denial": chart("CHART-denial", chart_ids["denial_rate"], 4, 30),
+        # ── KPI ROW 1 (4 big numbers, w=3 each = 12 total) ───
+        "ROW-kpi-1": row("ROW-kpi-1",
+            ["CHART-patients", "CHART-encounters", "CHART-claims", "CHART-billed"], PG),
+        "CHART-patients":   chart_el("CHART-patients",   chart_ids["k_patients"],   3, 30, PG + ["ROW-kpi-1"]),
+        "CHART-encounters": chart_el("CHART-encounters", chart_ids["k_encounters"], 3, 30, PG + ["ROW-kpi-1"]),
+        "CHART-claims":     chart_el("CHART-claims",     chart_ids["k_claims"],     3, 30, PG + ["ROW-kpi-1"]),
+        "CHART-billed":     chart_el("CHART-billed",     chart_ids["k_billed"],     3, 30, PG + ["ROW-kpi-1"]),
 
-        # Row 2: Monthly trend + Top denials (each 6/12)
-        "ROW-rev": row("ROW-rev", ["CHART-monthly", "CHART-denials"]),
-        "CHART-monthly": chart("CHART-monthly", chart_ids["monthly"], 6, 50),
-        "CHART-denials": chart("CHART-denials", chart_ids["denials"], 6, 50),
+        # ── KPI ROW 2 ───
+        "ROW-kpi-2": row("ROW-kpi-2",
+            ["CHART-paid", "CHART-collrate", "CHART-denrate", "CHART-days"], PG),
+        "CHART-paid":     chart_el("CHART-paid",     chart_ids["k_paid"],            3, 30, PG + ["ROW-kpi-2"]),
+        "CHART-collrate": chart_el("CHART-collrate", chart_ids["k_collection_rate"], 3, 30, PG + ["ROW-kpi-2"]),
+        "CHART-denrate":  chart_el("CHART-denrate",  chart_ids["k_denial_rate"],     3, 30, PG + ["ROW-kpi-2"]),
+        "CHART-days":     chart_el("CHART-days",     chart_ids["k_days"],            3, 30, PG + ["ROW-kpi-2"]),
 
-        # Row 3: Department revenue + Documents (each 6/12)
-        "ROW-detail": row("ROW-detail", ["CHART-dept", "CHART-docs"]),
-        "CHART-dept":   chart("CHART-dept", chart_ids["dept"], 6, 50),
-        "CHART-docs":   chart("CHART-docs", chart_ids["docs"], 6, 50),
+        # ── TABS ────────────────────────────────────────────
+        "TABS-MAIN": {
+            "type": "TABS", "id": "TABS-MAIN",
+            "meta": {},
+            "children": ["TAB-rev", "TAB-den", "TAB-cdi", "TAB-prov", "TAB-dq"],
+            "parents": ["ROOT_ID", "GRID_ID"],
+        },
 
-        # Row 4: Full-width DQ table
-        "ROW-dq": row("ROW-dq", ["CHART-dq"]),
-        "CHART-dq": chart("CHART-dq", chart_ids["dq"], 12, 50),
+        # ── TAB 1: Revenue Cycle ────
+        "TAB-rev": tab("TAB-rev", "Revenue Cycle", ["ROW-rev-1", "ROW-rev-2"], ["ROOT_ID", "GRID_ID", "TABS-MAIN"]),
+        "ROW-rev-1": row("ROW-rev-1", ["CHART-monthly", "CHART-payer"], ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-rev"]),
+        "CHART-monthly": chart_el("CHART-monthly", chart_ids["monthly"], 7, 50, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-rev", "ROW-rev-1"]),
+        "CHART-payer":   chart_el("CHART-payer",   chart_ids["payer"],   5, 50, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-rev", "ROW-rev-1"]),
+        "ROW-rev-2": row("ROW-rev-2", ["CHART-dept"], ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-rev"]),
+        "CHART-dept": chart_el("CHART-dept", chart_ids["dept"], 12, 50, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-rev", "ROW-rev-2"]),
+
+        # ── TAB 2: Denials ────
+        "TAB-den": tab("TAB-den", "Denials", ["ROW-den-1"], ["ROOT_ID", "GRID_ID", "TABS-MAIN"]),
+        "ROW-den-1": row("ROW-den-1", ["CHART-denials"], ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-den"]),
+        "CHART-denials": chart_el("CHART-denials", chart_ids["denials"], 12, 60, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-den", "ROW-den-1"]),
+
+        # ── TAB 3: Clinical Documentation ────
+        "TAB-cdi": tab("TAB-cdi", "Clinical Documentation", ["ROW-cdi-1"], ["ROOT_ID", "GRID_ID", "TABS-MAIN"]),
+        "ROW-cdi-1": row("ROW-cdi-1", ["CHART-raf", "CHART-docs"], ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-cdi"]),
+        "CHART-raf":  chart_el("CHART-raf",  chart_ids["raf"],  7, 50, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-cdi", "ROW-cdi-1"]),
+        "CHART-docs": chart_el("CHART-docs", chart_ids["docs"], 5, 50, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-cdi", "ROW-cdi-1"]),
+
+        # ── TAB 4: Providers ────
+        "TAB-prov": tab("TAB-prov", "Providers", ["ROW-prov-1"], ["ROOT_ID", "GRID_ID", "TABS-MAIN"]),
+        "ROW-prov-1": row("ROW-prov-1", ["CHART-providers"], ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-prov"]),
+        "CHART-providers": chart_el("CHART-providers", chart_ids["providers"], 12, 50, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-prov", "ROW-prov-1"]),
+
+        # ── TAB 5: Data Health ────
+        "TAB-dq": tab("TAB-dq", "Data Health", ["ROW-dq-1"], ["ROOT_ID", "GRID_ID", "TABS-MAIN"]),
+        "ROW-dq-1": row("ROW-dq-1", ["CHART-dq"], ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-dq"]),
+        "CHART-dq": chart_el("CHART-dq", chart_ids["dq"], 12, 50, ["ROOT_ID", "GRID_ID", "TABS-MAIN", "TAB-dq", "ROW-dq-1"]),
     }
 
     body = {
@@ -331,8 +453,7 @@ def build_dashboard(chart_ids):
     # Attach charts to the dashboard
     for cid in chart_ids.values():
         try:
-            c.request("PUT", f"/api/v1/chart/{cid}",
-                      body={"dashboards": [dash_id]})
+            c.request("PUT", f"/api/v1/chart/{cid}", body={"dashboards": [dash_id]})
         except Exception as e:
             print(f"  ⚠ link chart {cid}: {e}")
     return dash_id
@@ -341,7 +462,7 @@ def build_dashboard(chart_ids):
 def main():
     print("== Login ==")
     c.login()
-    print(f"  ✓ token acquired, csrf set")
+    print("  ✓ token acquired, csrf set")
 
     print("== Find Trino DB ==")
     db_id = find_db_id()
