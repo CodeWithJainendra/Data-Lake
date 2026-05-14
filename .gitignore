@@ -1,0 +1,26 @@
+# Data — generated synthetic data, not committed
+data/
+
+# Hive — JDBC driver downloaded at runtime
+hive/lib/*.jar
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Docker
+.env.local
+
+# Spark / logs
+*.log
+spark-warehouse/
+metastore_db/

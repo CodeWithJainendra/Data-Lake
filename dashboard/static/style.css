@@ -1,0 +1,312 @@
+/* ============================================================
+   Medical & Billing Data Lake — Dashboard
+   Dark, dense, BI-tool feel. Teal/cyan accents (medical/tech).
+   ============================================================ */
+
+* { box-sizing: border-box; }
+
+:root {
+  --bg-0:        #0b1220;
+  --bg-1:        #0f172a;
+  --bg-2:        #1e293b;
+  --bg-3:        #243047;
+  --border:      #243047;
+  --border-soft: #1a2434;
+
+  --fg:          #e2e8f0;
+  --fg-muted:    #94a3b8;
+  --fg-dim:      #64748b;
+
+  --accent:      #06b6d4;
+  --accent-2:    #14b8a6;
+  --accent-3:    #22d3ee;
+
+  --pos:         #22c55e;
+  --warn:        #f59e0b;
+  --neg:         #ef4444;
+  --info:        #60a5fa;
+
+  --shadow:      0 1px 0 rgba(255,255,255,0.04) inset,
+                 0 4px 16px rgba(0,0,0,0.25);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg-0);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.45;
+  min-height: 100vh;
+}
+
+code {
+  background: var(--bg-3);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 12px;
+  color: var(--accent-3);
+}
+
+/* ──────────────────────────────────────────────────────────────
+   TOPBAR
+   ────────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: blur(8px);
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-mark {
+  width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  color: #021018;
+  font-size: 22px;
+  font-weight: 700;
+}
+.brand-title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.brand-sub   { font-size: 11px; color: var(--fg-muted); margin-top: 2px; }
+
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.health-pill, .updated-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.health-pill .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--fg-dim);
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5);
+}
+.health-pill.ok .dot   { background: var(--pos); box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.15); }
+.health-pill.bad .dot  { background: var(--neg); box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.15); }
+
+.btn-ghost {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background .15s, border-color .15s;
+}
+.btn-ghost:hover { background: var(--bg-3); border-color: var(--accent); }
+.btn-ghost svg { transition: transform .4s; }
+.btn-ghost.spinning svg { transform: rotate(360deg); }
+
+/* ──────────────────────────────────────────────────────────────
+   KPI GRID
+   ────────────────────────────────────────────────────────────── */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px 24px 8px;
+}
+.kpi {
+  background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 14px 10px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.kpi::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  opacity: 0.6;
+}
+.kpi-label { font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 4px 0 2px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.kpi-value.alert    { color: var(--warn); }
+.kpi-foot           { font-size: 10px; color: var(--fg-dim); margin-top: 4px; }
+
+@media (max-width: 1400px) { .kpi-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 700px)  { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* ──────────────────────────────────────────────────────────────
+   TABS
+   ────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 24px 0;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid transparent;
+  border-bottom: none;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+  transition: color .15s, background .15s;
+}
+.tab:hover { color: var(--fg); background: var(--bg-2); }
+.tab.active {
+  color: var(--accent-3);
+  background: var(--bg-1);
+  border-color: var(--border);
+  border-bottom-color: var(--bg-1);
+  margin-bottom: -1px;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   PANELS / GRID
+   ────────────────────────────────────────────────────────────── */
+.panels { padding: 16px 24px 32px; }
+.panel  { display: none; }
+.panel.active { display: block; }
+
+.grid {
+  display: grid;
+  gap: 12px;
+}
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.span-2 { grid-column: span 2; }
+
+@media (max-width: 1100px) {
+  .grid-2 { grid-template-columns: 1fr; }
+  .span-2 { grid-column: span 1; }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   CARDS
+   ────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px 12px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.card-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--fg);
+}
+.card-sub { font-size: 11px; color: var(--fg-muted); }
+
+.chart-wrap      { position: relative; height: 260px; }
+.chart-wrap.tall { height: 380px; }
+
+/* ──────────────────────────────────────────────────────────────
+   TABLES
+   ────────────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; }
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.data-table th, .data-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+.data-table th {
+  color: var(--fg-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.data-table .num { text-align: right; }
+.data-table tbody tr:hover { background: var(--bg-2); }
+.data-table td.empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.status-PASS { background: rgba(34, 197, 94, 0.12);  color: var(--pos);  }
+.status-WARN { background: rgba(245, 158, 11, 0.12); color: var(--warn); }
+.status-FAIL { background: rgba(239, 68, 68, 0.12);  color: var(--neg);  }
+
+/* ──────────────────────────────────────────────────────────────
+   REFERENCE GRID (Denials)
+   ────────────────────────────────────────────────────────────── */
+.ref-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 16px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.ref-grid b { color: var(--accent-3); margin-right: 6px; font-weight: 600; }
+
+/* ──────────────────────────────────────────────────────────────
+   FOOTER
+   ────────────────────────────────────────────────────────────── */
+.foot {
+  padding: 14px 24px 20px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 8px;
+}
+.foot code { background: transparent; color: var(--accent-3); padding: 0; }
+
+/* ──────────────────────────────────────────────────────────────
+   ANIMATIONS
+   ────────────────────────────────────────────────────────────── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.loading { animation: pulse 1.4s ease-in-out infinite; }

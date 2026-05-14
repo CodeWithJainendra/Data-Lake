@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  NiFi Template — PDF Ingestion Flow (real-time)
+  ──────────────────────────────────────────────
+  Purpose: Accept PDF uploads via HTTP, hash them for deduplication, and
+           push to MinIO under raw/pdfs/<sha256>.pdf
+
+  Use case: Hospital scanner / EHR system POSTs a PDF to
+             https://localhost:8443/pdf — it lands in the lake in seconds.
+
+  Test:
+    curl -k -X POST -F "file=@/path/to/lab_report.pdf" \
+         https://localhost:8443/pdf
+
+  Processors:
+    1. ListenHTTP            — port 8090 path /pdf
+    2. HashContent (SHA-256) — content hash for dedup
+    3. UpdateAttribute       — set s3.key = "pdfs/${hash.value}.pdf"
+    4. PutS3Object           — upload to MinIO bucket "raw"
+-->
+<template encoding-version="1.4">
+  <description>Receive PDFs via HTTP and upload to MinIO raw/pdfs/&lt;sha256&gt;.pdf</description>
+  <groupId>00000000-0000-0000-0000-000000000000</groupId>
+  <name>pdf_ingestion_flow</name>
+  <snippet>
+
+    <processors>
+      <id>aaaa1111-1111-1111-1111-aaaa11111111</id>
+      <name>ListenHTTP /pdf</name>
+      <type>org.apache.nifi.processors.standard.ListenHTTP</type>
+      <position><x>100.0</x><y>100.0</y></position>
+      <config>
+        <properties>
+          <entry><key>Listening Port</key><value>8090</value></entry>
+          <entry><key>Base Path</key><value>pdf</value></entry>
+          <entry><key>Max Data to Receive per Second</key><value>0</value></entry>
+        </properties>
+      </config>
+    </processors>
+
+    <processors>
+      <id>bbbb2222-2222-2222-2222-bbbb22222222</id>
+      <name>HashContent SHA-256</name>
+      <type>org.apache.nifi.processors.standard.HashContent</type>
+      <position><x>400.0</x><y>100.0</y></position>
+      <config>
+        <properties>
+          <entry><key>Hash Algorithm</key><value>SHA-256</value></entry>
+          <entry><key>Hash Attribute Name</key><value>hash.value</value></entry>
+        </properties>
+      </config>
+    </processors>
+
+    <processors>
+      <id>cccc3333-3333-3333-3333-cccc33333333</id>
+      <name>Set S3 Key</name>
+      <type>org.apache.nifi.processors.attributes.UpdateAttribute</type>
+      <position><x>700.0</x><y>100.0</y></position>
+      <config>
+        <properties>
+          <entry><key>s3.key</key><value>pdfs/${hash.value}.pdf</value></entry>
+          <entry><key>filename</key><value>${hash.value}.pdf</value></entry>
+        </properties>
+      </config>
+    </processors>
+
+    <processors>
+      <id>dddd4444-4444-4444-4444-dddd44444444</id>
+      <name>PutS3Object (MinIO raw/pdfs/)</name>
+      <type>org.apache.nifi.processors.aws.s3.PutS3Object</type>
+      <position><x>1000.0</x><y>100.0</y></position>
+      <config>
+        <properties>
+          <entry><key>Bucket</key><value>raw</value></entry>
+          <entry><key>Object Key</key><value>${s3.key}</value></entry>
+          <entry><key>Access Key</key><value>admin</value></entry>
+          <entry><key>Secret Key</key><value>admin123456</value></entry>
+          <entry><key>Region</key><value>us-east-1</value></entry>
+          <entry><key>Endpoint Override URL</key><value>http://minio:9000</value></entry>
+          <entry><key>Signer Override</key><value>AWSS3V4SignerType</value></entry>
+          <entry><key>Use Path Style Access</key><value>true</value></entry>
+          <entry><key>Content Type</key><value>application/pdf</value></entry>
+        </properties>
+      </config>
+    </processors>
+
+    <connections>
+      <id>conn-1</id>
+      <source><id>aaaa1111-1111-1111-1111-aaaa11111111</id><type>PROCESSOR</type></source>
+      <destination><id>bbbb2222-2222-2222-2222-bbbb22222222</id><type>PROCESSOR</type></destination>
+      <selectedRelationships>success</selectedRelationships>
+    </connections>
+    <connections>
+      <id>conn-2</id>
+      <source><id>bbbb2222-2222-2222-2222-bbbb22222222</id><type>PROCESSOR</type></source>
+      <destination><id>cccc3333-3333-3333-3333-cccc33333333</id><type>PROCESSOR</type></destination>
+      <selectedRelationships>success</selectedRelationships>
+    </connections>
+    <connections>
+      <id>conn-3</id>
+      <source><id>cccc3333-3333-3333-3333-cccc33333333</id><type>PROCESSOR</type></source>
+      <destination><id>dddd4444-4444-4444-4444-dddd44444444</id><type>PROCESSOR</type></destination>
+      <selectedRelationships>success</selectedRelationships>
+    </connections>
+
+  </snippet>
+</template>

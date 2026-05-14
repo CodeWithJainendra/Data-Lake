@@ -1,0 +1,70 @@
+{
+  "catalogs": [
+    { "catalog": "hive", "allow": "all" }
+  ],
+  "schemas": [
+    { "user": ".*", "schema": ".*", "owner": false }
+  ],
+  "tables": [
+    {
+      "user": "data_engineer|admin",
+      "catalog": "hive",
+      "schema": "curated",
+      "table": "dim_patient",
+      "privileges": ["SELECT", "DELETE", "UPDATE", "INSERT"]
+    },
+    {
+      "user": "(?!data_engineer|admin).*",
+      "catalog": "hive",
+      "schema": "curated",
+      "table": "dim_patient",
+      "privileges": []
+    },
+    {
+      "user": "data_engineer|admin|sre",
+      "catalog": "hive",
+      "schema": "dlq",
+      "table": ".*",
+      "privileges": ["SELECT"]
+    },
+    {
+      "user": ".*",
+      "catalog": "hive",
+      "schema": ".*",
+      "table": ".*",
+      "privileges": ["SELECT"]
+    }
+  ],
+  "procedures": [
+    {
+      "user": "data_engineer|admin",
+      "catalog": "hive",
+      "schema": ".*",
+      "procedure": ".*",
+      "privileges": ["EXECUTE", "GRANT_EXECUTE"]
+    },
+    {
+      "user": ".*",
+      "catalog": "hive",
+      "schema": ".*",
+      "procedure": ".*",
+      "privileges": []
+    }
+  ],
+  "functions": [
+    {
+      "user": "data_engineer|admin",
+      "catalog": "hive",
+      "schema": ".*",
+      "function": ".*",
+      "privileges": ["EXECUTE", "GRANT_EXECUTE"]
+    },
+    {
+      "user": ".*",
+      "catalog": "system",
+      "schema": "builtin",
+      "function": ".*",
+      "privileges": ["EXECUTE"]
+    }
+  ]
+}

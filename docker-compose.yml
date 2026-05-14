@@ -1,0 +1,284 @@
+version: '3.8'
+
+# ============================================================================
+# Medical & Billing Data Lake — Full Stack
+# Tested on Apple Silicon (M-series). All images are multi-arch (arm64).
+# ============================================================================
+# Path convention: s3:// is used EVERYWHERE (Spark, Hive, Trino).
+# Spark is configured (via spark-defaults.conf) so that fs.s3.impl points to
+# S3AFileSystem — meaning Spark uses the S3A driver but URLs stay s3://.
+# This lets Trino's native S3 filesystem (Trino 458+) read the same tables.
+# ============================================================================
+
+services:
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 3. STORAGE LAYER — MinIO (S3-compatible object store)
+  # ──────────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: dl-minio
+    # No platform pin — image is multi-arch; Docker picks the right one
+    # automatically (arm64 on Apple Silicon, amd64 on Intel/AMD).
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: admin123456
+      MINIO_DOMAIN: minio
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    # Healthcheck: pure-bash TCP probe (no curl/wget needed — minio image
+    # doesn't include them). Opens an FD to localhost:9000 and exits 0/1.
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/9000' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - datalake
+
+  # Bootstrap buckets — runs once, exits.
+  minio-init:
+    image: minio/mc:latest
+    container_name: dl-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 admin admin123456;
+      mc mb -p local/raw;
+      mc mb -p local/processed;
+      mc mb -p local/curated;
+      mc mb -p local/warehouse;
+      mc mb -p local/dlq;
+      echo 'Buckets created (no public anonymous access — HIPAA compliant).';
+      exit 0;
+      "
+    networks:
+      - datalake
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 5. CATALOG LAYER — Hive Metastore (backed by Postgres)
+  # ──────────────────────────────────────────────────────────────────────
+  postgres-hive:
+    image: postgres:15
+    container_name: dl-postgres-hive
+    environment:
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive
+      POSTGRES_DB: metastore
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datalake
+
+  hive-metastore:
+    # Custom Hive image — extends apache/hive:4.0.0 with required JARs
+    # (postgres JDBC + hadoop-aws + AWS SDK) baked in at build time.
+    # No more runtime curl + bind-mount of jar files.
+    build:
+      context: ./hive
+      dockerfile: Dockerfile
+    image: datalake/hive-metastore:4.0.0
+    container_name: dl-hive-metastore
+    depends_on:
+      postgres-hive:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "9083:9083"
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: >-
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-hive:5432/metastore
+        -Djavax.jdo.option.ConnectionUserName=hive
+        -Djavax.jdo.option.ConnectionPassword=hive
+    volumes:
+      - ./hive/conf/hive-site.xml:/opt/hive/conf/hive-site.xml
+    networks:
+      - datalake
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 4. PROCESSING LAYER — Custom Spark image with OCR system packages
+  # ──────────────────────────────────────────────────────────────────────
+  spark-master:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: datalake/spark-ocr:3.5.6
+    container_name: dl-spark-master
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      SPARK_MODE: master
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+      SPARK_USER: spark
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark/jobs:/opt/spark-jobs
+      - ./spark/conf/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./hive/conf/hive-site.xml:/opt/bitnami/spark/conf/hive-site.xml
+      - ./data:/opt/data
+    networks:
+      - datalake
+
+  spark-worker:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: datalake/spark-ocr:3.5.6
+    container_name: dl-spark-worker
+    depends_on:
+      spark-master:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 6G
+      SPARK_WORKER_CORES: 4
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+      SPARK_USER: spark
+    volumes:
+      - ./spark/jobs:/opt/spark-jobs
+      - ./spark/conf/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./hive/conf/hive-site.xml:/opt/bitnami/spark/conf/hive-site.xml
+      - ./data:/opt/data
+    networks:
+      - datalake
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 6. QUERY LAYER — Trino (SQL on data lake) — native S3 with s3:// scheme
+  # ──────────────────────────────────────────────────────────────────────
+  trino:
+    image: trinodb/trino:latest
+    container_name: dl-trino
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./trino/etc:/etc/trino
+    depends_on:
+      hive-metastore:
+        condition: service_started
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - datalake
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 7. VISUALIZATION LAYER — Apache Superset
+  # ──────────────────────────────────────────────────────────────────────
+  superset:
+    image: apache/superset:latest
+    container_name: dl-superset
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin
+      ADMIN_EMAIL: admin@datalake.local
+    volumes:
+      - superset_data:/app/superset_home
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py
+    command: >
+      /bin/bash -c "
+      pip install trino sqlalchemy-trino &&
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@datalake.local --password admin || true &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger
+      "
+    depends_on:
+      - trino
+    networks:
+      - datalake
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 2. INGESTION LAYER — Apache NiFi (config persists via flow.xml.gz volume)
+  # ──────────────────────────────────────────────────────────────────────
+  nifi:
+    image: apache/nifi:latest
+    container_name: dl-nifi
+    ports:
+      - "8443:8443"
+    environment:
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: ctsBtRBKHRAx69EqUghvvgEvjnaLjFEB
+      NIFI_WEB_HTTPS_PORT: 8443
+    volumes:
+      - nifi_data:/opt/nifi/nifi-current/data
+      - nifi_conf:/opt/nifi/nifi-current/conf
+      - nifi_state:/opt/nifi/nifi-current/state
+      - nifi_flowfile:/opt/nifi/nifi-current/flowfile_repository
+      - nifi_content:/opt/nifi/nifi-current/content_repository
+      - nifi_provenance:/opt/nifi/nifi-current/provenance_repository
+      - ./nifi/templates:/opt/nifi/nifi-current/templates
+      - ./data:/opt/data
+    networks:
+      - datalake
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Helper: Jupyter workbench for ad-hoc exploration / data generation
+  # ──────────────────────────────────────────────────────────────────────
+  workbench:
+    image: jupyter/pyspark-notebook:latest
+    container_name: dl-workbench
+    ports:
+      - "8888:8888"
+    environment:
+      JUPYTER_TOKEN: datalake
+    volumes:
+      - ./spark/jobs:/home/jovyan/work/jobs
+      - ./data:/home/jovyan/work/data
+      - ./data-generator:/home/jovyan/work/data-generator
+      - ./sql:/home/jovyan/work/sql
+    networks:
+      - datalake
+
+volumes:
+  minio_data:
+  postgres_data:
+  superset_data:
+  nifi_data:
+  nifi_conf:
+  nifi_state:
+  nifi_flowfile:
+  nifi_content:
+  nifi_provenance:
+
+networks:
+  datalake:
+    # Explicit name — independent of project-folder name. Without this,
+    # docker compose derives the network name from the parent folder
+    # (e.g. "data lake_datalake"), which breaks scripts that hardcode it.
+    name: medical_datalake
+    driver: bridge
