@@ -145,12 +145,23 @@ fi
 
 # ── 9. Open browser ─────────────────────────────────────────────────
 bold ""
-bold "[9/9] Open dashboard"
-case "$(uname)" in
-    Darwin)            open "http://localhost:5050" ;;
-    Linux)             xdg-open "http://localhost:5050" 2>/dev/null || true ;;
-    MINGW*|CYGWIN*)    start "http://localhost:5050" ;;
-esac
+bold "[9/9] Open both dashboards in browser"
+FLASK_URL="http://localhost:5050"
+SUPERSET_URL="http://localhost:8088/superset/dashboard/medical-data-lake-ops/"
+
+open_url() {
+    case "$(uname)" in
+        Darwin)         open "$1" ;;
+        Linux)          xdg-open "$1" 2>/dev/null || true ;;
+        MINGW*|CYGWIN*) start "$1" ;;
+    esac
+}
+
+open_url "$FLASK_URL"
+sleep 1
+open_url "$SUPERSET_URL"
+ok "opened Flask dashboard ($FLASK_URL)"
+ok "opened Superset dashboard ($SUPERSET_URL)"
 
 bold ""
 bold "════════════════════════════════════════════════════════════"
