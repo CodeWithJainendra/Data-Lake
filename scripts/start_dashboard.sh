@@ -19,17 +19,20 @@ fi
 PYV=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 echo "✓ python3 = $PYV"
 
-# 2. Create venv if missing (first run on this machine)
-if [ ! -d .venv ]; then
+# 2. Create venv if missing or broken (first run on this machine)
+if [ ! -f .venv/bin/activate ] || [ ! -x .venv/bin/python ] || ! .venv/bin/python -c 'import sys' >/dev/null 2>&1; then
     echo "Creating .venv (one-time) ..."
-    python3 -m venv .venv
+    rm -rf .venv
+    python3 -m venv .venv || {
+        echo "✗ Failed to create venv. Try: sudo apt install python3-venv python3-full"
+        exit 1
+    }
 fi
 
-# 3. Activate + install deps (idempotent — pip skips already-installed)
-# shellcheck source=/dev/null
-source .venv/bin/activate
-pip install -q --upgrade pip
-pip install -q -r requirements.txt
+# 3. Install deps using the venv interpreter directly
+VENV_PY="$DASH_DIR/.venv/bin/python"
+"$VENV_PY" -m pip install -q --upgrade pip
+"$VENV_PY" -m pip install -q -r requirements.txt
 echo "✓ dependencies installed in $DASH_DIR/.venv"
 
 # 4. Check Trino reachability
@@ -53,4 +56,4 @@ echo "============================================================"
 echo "  Dashboard starting → http://localhost:5050"
 echo "  Stop with Ctrl-C"
 echo "============================================================"
-exec python app.py
+exec "$VENV_PY" app.py
