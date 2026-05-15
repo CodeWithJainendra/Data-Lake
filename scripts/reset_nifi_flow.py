@@ -5,7 +5,7 @@ import json, urllib.request, urllib.parse, ssl, time, sys
 NIFI_URL = "https://localhost:8443"
 USER     = "admin"
 PASS     = "ctsBtRBKHRAx69EqUghvvgEvjnaLjFEB"
-ROOT_PG  = "2a71a802-019e-1000-3a9a-0584a76ca790"
+ROOT_PG  = None  # fetched dynamically after auth
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -40,6 +40,15 @@ r = urllib.request.Request(
 with urllib.request.urlopen(r, context=ctx) as resp:
     TOKEN = resp.read().decode().strip()
 print(f"   Token: {TOKEN[:20]}...")
+
+# Fetch root process group ID dynamically
+r2 = urllib.request.Request(
+    NIFI_URL + "/nifi-api/flow/process-groups/root",
+    headers={"Authorization": f"Bearer {TOKEN}"}
+)
+with urllib.request.urlopen(r2, context=ctx) as resp:
+    ROOT_PG = json.loads(resp.read())["processGroupFlow"]["id"]
+print(f"   Root PG: {ROOT_PG}")
 
 # ── 2. Stop all processors ───────────────────────────────────────────────────
 print("\n2. Stopping all processors...")
